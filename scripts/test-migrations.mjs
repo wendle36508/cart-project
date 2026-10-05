@@ -97,5 +97,18 @@ check('online tier must use online source',
   (await asUser(bob, `insert into public.prices (barcode, store_id, tier, source, price_cents, is_sale)
     values ('012345678905', '${store}', 'online', 'admin', 119, true)`)) !== null);
 
+// Phase 2: products and the lookup-miss cache are written only by the
+// lookup-product Edge Function (service role).
+check('user cannot add products directly',
+  (await asUser(alice, `insert into public.products (barcode, name) values ('0049000028911', 'Diet Coke')`)) !== null);
+check('user can add a scanned item to own trip',
+  (await asUser(alice, `insert into public.trip_items (trip_id, barcode)
+    select id, '012345678905' from public.trips where user_id = '${alice}' limit 1`)) === null);
+await db.exec(`insert into public.product_lookup_misses (barcode) values ('0000000000017')`);
+check('user cannot read lookup misses',
+  (await countAs(alice, 'select count(*)::int n from public.product_lookup_misses')) === 0);
+check('user cannot write lookup misses',
+  (await asUser(alice, `insert into public.product_lookup_misses (barcode) values ('0000000000024')`)) !== null);
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);

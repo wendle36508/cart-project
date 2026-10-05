@@ -10,8 +10,7 @@ export default function RootLayout() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const start = () => {
-    setError(null);
+  const connect = () => {
     ensureSession()
       .then(() => {
         setReady(true);
@@ -20,14 +19,19 @@ export default function RootLayout() {
       .catch((e: Error) => setError(e.message));
   };
 
-  useEffect(start, []);
+  useEffect(connect, []);
 
   if (error) {
     return (
       <View style={styles.center}>
-        <Text style={styles.title}>Can't connect</Text>
+        <Text style={styles.title}>Can&apos;t connect</Text>
         <Text style={styles.muted}>{error}</Text>
-        <Pressable style={styles.button} onPress={start}>
+        <Pressable
+          style={styles.button}
+          onPress={() => {
+            setError(null);
+            connect();
+          }}>
           <Text style={styles.buttonText}>Try again</Text>
         </Pressable>
       </View>
@@ -50,7 +54,8 @@ export default function RootLayout() {
         contentStyle: { backgroundColor: colors.bg },
       }}>
       <Stack.Screen name="index" options={{ title: 'CartCheck' }} />
-      <Stack.Screen name="trip/[id]" options={{ title: 'Your cart' }} />
+      <Stack.Screen name="trip/[id]/index" options={{ title: 'Your cart' }} />
+      <Stack.Screen name="trip/[id]/scan" options={{ headerShown: false, presentation: 'fullScreenModal' }} />
     </Stack>
   );
 }

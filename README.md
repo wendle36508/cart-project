@@ -30,8 +30,9 @@ docs/                data sources, tax rules
 Prerequisites: Node 20+, and the Expo Go app on your phone.
 
 ```bash
-npm install                 # root: Supabase CLI + DB test tooling
-npm run test:db             # applies all migrations to in-memory Postgres and runs RLS checks
+npm install                 # root: Supabase CLI + test tooling
+npm test                    # DB migrations + RLS checks, then Edge Function unit tests
+npm run test:functions -- --live   # also looks up real barcodes on Open Food Facts
 
 cd app
 npm install
@@ -47,7 +48,25 @@ npx supabase projects create cartcheck --region us-east-1
 npx supabase link --project-ref <ref>
 npx supabase db push        # applies supabase/migrations
 npx supabase config push    # enables anonymous sign-ins (from supabase/config.toml)
+npx supabase functions deploy lookup-product
 ```
+
+## Scanning and product lookup
+
+The app sends the raw barcode to the `lookup-product` Edge Function, which:
+
+1. Normalizes it (UPC-A, UPC-E and EAN all become one 13-digit key, so iOS,
+   Android and typed codes match the same product).
+2. Returns the product if we already have it.
+3. Otherwise looks it up in Open Food Facts, then the household, beauty and pet
+   food sister databases, and classifies tax category and bottle deposit
+   ([docs/tax-rules.md](docs/tax-rules.md)).
+4. If nobody has it, the shopper names it once (name + food / household /
+   alcohol) and it is saved for everyone. Misses are cached for 7 days so
+   unknown items don't hit Open Food Facts on every scan.
+
+Scanning the same item again adds 1 to its quantity. A scan can be undone from
+the confirmation card.
 
 To make yourself an admin, run this in the SQL editor after opening the app once:
 `update profiles set role = 'admin' where id = '<your user id>';`
@@ -59,7 +78,8 @@ To make yourself an admin, run this in the SQL editor after opening the app once
 | `profiles` | One per user (anonymous OK). Display name, role, points. |
 | `chains`, `store_locations` | Fixed list of supported chains and specific stores |
 | `tax_regions`, `tax_rates` | Tax rate per category per region. See [docs/tax-rules.md](docs/tax-rules.md). |
-| `products` | Keyed by barcode. Tax category, deposit, weighed, curated, essential. |
+| `products` | Keyed by barcode (normalized GTIN-13). Tax category, deposit, weighed, curated, essential. |
+| `product_lookup_misses` | Barcodes Open Food Facts didn't have; Edge Function only |
 | `price_submissions` | Append-only log of every price seen: who, when, source, sale info, AI confidence |
 | `prices` | Current price per product × store × tier (in-store/online) × regular/sale |
 | `price_feedback` | "Still correct?" / "Wrong price" votes |
@@ -84,7 +104,7 @@ online feed.
 ## Build phases
 
 1. ✅ Setup, data model, backend, chain and store list
-2. Barcode scanning and product lookup
+2. ✅ Barcode scanning and product lookup
 3. Online price layer (pluggable sources) and labeling
 4. In-store prices, snap-the-tag flow, crowdsourced replacement
 5. Running total, tax, budget alerts, put-back suggestions

@@ -3,11 +3,14 @@
   "private": true,
   "description": "CartCheck: scan groceries as you shop and see your running total before checkout.",
   "scripts": {
+    "test": "npm run test:db && npm run test:functions",
     "test:db": "node scripts/test-migrations.mjs",
+    "test:functions": "tsx scripts/test-functions.mts",
     "supabase": "supabase"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
-    "supabase": "^2.119.0"
+    "supabase": "^2.119.0",
+    "tsx": "^4.23.15"
   }
 }
