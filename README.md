@@ -50,7 +50,7 @@ npx supabase projects create cartcheck --region us-east-1
 npx supabase link --project-ref <ref>
 npx supabase db push        # applies supabase/migrations
 npx supabase config push    # enables anonymous sign-ins (from supabase/config.toml)
-npx supabase functions deploy lookup-product
+npx supabase functions deploy lookup-product get-price
 ```
 
 ## Scanning and product lookup
@@ -107,7 +107,7 @@ online feed.
 
 1. ✅ Setup, data model, backend, chain and store list
 2. ✅ Barcode scanning and product lookup
-3. Online price layer (pluggable sources) and labeling
+3. ✅ Online price layer (pluggable sources) and labeling
 4. In-store prices, snap-the-tag flow, crowdsourced replacement
 5. Running total, tax, budget alerts, put-back suggestions
 6. Admin pre-load tool and receipt scanning

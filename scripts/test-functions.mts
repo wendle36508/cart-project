@@ -1,5 +1,6 @@
-// Unit tests for the Edge Function shared code (barcode normalization and
-// Open Food Facts classification). Runs in Node via tsx; no Deno needed.
+// Unit tests for the Edge Function shared code (barcode normalization, Open
+// Food Facts classification, online price adapters). Runs in Node via tsx;
+// no Deno needed. Price adapters are tested against canned API responses.
 //
 //   npm run test:functions           offline checks only
 //   npm run test:functions -- --live also looks up real barcodes on Open Food Facts
@@ -7,6 +8,10 @@
 import { expandUpcE, normalizeBarcode } from '../supabase/functions/_shared/barcode.ts';
 import { classifyOffProduct, containerCount } from '../supabase/functions/_shared/classify.ts';
 import { lookupOpenFoodFacts } from '../supabase/functions/_shared/off.ts';
+import { krogerProductIds, kroger, resetKrogerToken } from '../supabase/functions/_sources/kroger.ts';
+import { SOURCES } from '../supabase/functions/_sources/index.ts';
+import { toCents } from '../supabase/functions/_sources/types.ts';
+import { walmart, walmartHeaders } from '../supabase/functions/_sources/walmart.ts';
 
 let failures = 0;
 const check = (label: string, actual: unknown, expected: unknown) => {
@@ -100,6 +105,93 @@ check('milk is essential', milk?.is_essential, true);
 check('milk category', milk?.category, 'dairy');
 
 check('unnamed record returns null', classifyOffProduct('1', 'food', { brands: 'X' }), null);
+
+// --- Online price sources ----------------------------------------------------------
+check('dollars to cents', [toCents(3.49), toCents('2.5'), toCents(0), toCents(null), toCents(1.005)], [349, 250, null, null, 101]);
+check('registry has kroger and walmart', Object.keys(SOURCES).sort(), ['kroger', 'walmart']);
+check('Kroger product ids: drop check digit and pad, then full GTIN',
+  krogerProductIds('0011110417005'), ['0001111041700', '0011110417005']);
+
+const noEnv = () => undefined;
+check('unconfigured sources are skipped', [kroger.isConfigured(noEnv), walmart.isConfigured(noEnv)], [false, false]);
+
+/** Fake fetch: answers by URL substring, records every request. */
+function fakeFetch(routes: [string, number, unknown][]) {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const fn = (async (url: string | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    const route = routes.find(([part]) => String(url).includes(part));
+    const [, status, body] = route ?? ['', 404, {}];
+    return new Response(JSON.stringify(body), { status: status as number });
+  }) as typeof fetch;
+  return { fn, calls };
+}
+
+const krogerEnv = (n: string) => ({ KROGER_CLIENT_ID: 'id', KROGER_CLIENT_SECRET: 'secret' })[n];
+const tokenRoute: [string, number, unknown] = ['/connect/oauth2/token', 200, { access_token: 'tok', expires_in: 1800 }];
+
+resetKrogerToken();
+let f = fakeFetch([tokenRoute, ['/products/0001111041700', 200, { data: { items: [{ price: { regular: 3.49, promo: 2.99 }, soldBy: 'UNIT' }] } }]]);
+check('Kroger promo -> sale price with regular',
+  await kroger.fetchPrice({ gtin13: '0011110417005', externalStoreId: '01400943' }, krogerEnv, f.fn),
+  { price_cents: 299, regular_price_cents: 349, is_sale: true, price_unit: 'each' });
+check('Kroger sends locationId and bearer token',
+  [f.calls[1].url.includes('filter.locationId=01400943'), (f.calls[1].init?.headers as Record<string, string>).Authorization],
+  [true, 'Bearer tok']);
+
+f = fakeFetch([['/products/0001111041700', 200, { data: { items: [{ price: { regular: 1.99, promo: 0 }, soldBy: 'WEIGHT' }] } }]]);
+check('Kroger promo 0 = no sale; WEIGHT = per lb (token reused)',
+  await kroger.fetchPrice({ gtin13: '0011110417005', externalStoreId: '01400943' }, krogerEnv, f.fn),
+  { price_cents: 199, regular_price_cents: null, is_sale: false, price_unit: 'lb' });
+check('Kroger token cached between calls', f.calls.some((c) => c.url.includes('oauth2')), false);
+
+f = fakeFetch([['/products/0011110417005', 200, { data: { items: [{ price: { regular: 5 } }] } }]]);
+check('Kroger falls back to full GTIN id',
+  (await kroger.fetchPrice({ gtin13: '0011110417005', externalStoreId: 'x' }, krogerEnv, f.fn))?.price_cents, 500);
+
+f = fakeFetch([['/products/', 200, { data: { items: [{}] } }]]);
+check('Kroger item without a price at this store -> null',
+  await kroger.fetchPrice({ gtin13: '0011110417005', externalStoreId: 'x' }, krogerEnv, f.fn), null);
+check('Kroger without a store id -> null',
+  await kroger.fetchPrice({ gtin13: '0011110417005', externalStoreId: null }, krogerEnv, f.fn), null);
+
+// Walmart: sign with a fresh key and verify with its public half.
+const { privateKey, publicKey } = await crypto.subtle.generateKey(
+  { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+  true,
+  ['sign', 'verify'],
+);
+const pkcs8 = Buffer.from(await crypto.subtle.exportKey('pkcs8', privateKey)).toString('base64');
+// One-line form with literal \n, the way a secret is usually pasted.
+const pem = `-----BEGIN PRIVATE KEY-----\\n${pkcs8.match(/.{1,64}/g)!.join('\\n')}\\n-----END PRIVATE KEY-----`;
+const walmartEnv = (n: string) => ({ WALMART_CONSUMER_ID: 'consumer-1', WALMART_KEY_VERSION: '1', WALMART_PRIVATE_KEY: pem })[n];
+
+const headers = await walmartHeaders(walmartEnv, 1700000000000);
+const verified = await crypto.subtle.verify(
+  'RSASSA-PKCS1-v1_5',
+  publicKey,
+  Buffer.from(headers['WM_SEC.AUTH_SIGNATURE'], 'base64'),
+  new TextEncoder().encode('consumer-1\n1700000000000\n1\n'),
+);
+check('Walmart signature verifies over "consumerId\\ntimestamp\\nkeyVersion\\n"', verified, true);
+check('Walmart headers', [headers['WM_CONSUMER.ID'], headers['WM_CONSUMER.INTIMESTAMP'], headers['WM_SEC.KEY_VERSION']],
+  ['consumer-1', '1700000000000', '1']);
+
+f = fakeFetch([['/affil/product/v2/items?upc=049000028911', 200, { items: [{ salePrice: 7.48 }] }]]);
+check('Walmart looks up by 12-digit UPC',
+  await walmart.fetchPrice({ gtin13: '0049000028911', externalStoreId: null }, walmartEnv, f.fn),
+  { price_cents: 748, regular_price_cents: null, is_sale: false, price_unit: 'each' });
+f = fakeFetch([]);
+check('Walmart skips EAN-only (non-US) barcodes without calling',
+  [await walmart.fetchPrice({ gtin13: '4006381333931', externalStoreId: null }, walmartEnv, f.fn), f.calls.length], [null, 0]);
+f = fakeFetch([['/items', 500, {}]]);
+let threw = false;
+try {
+  await walmart.fetchPrice({ gtin13: '0049000028911', externalStoreId: null }, walmartEnv, f.fn);
+} catch {
+  threw = true;
+}
+check('Walmart server error throws (caller keeps the old price)', threw, true);
 
 // --- Live lookups (optional) ---------------------------------------------------
 if (process.argv.includes('--live')) {

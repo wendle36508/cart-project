@@ -1,18 +1,22 @@
-// Active trip screen: what's in the cart, with quantity controls and a big
-// Scan button. Prices and the running total arrive in phases 4 and 5.
+// Active trip screen: what's in the cart with each item's price (labeled
+// in-store or online), quantity controls and a big Scan button. The running
+// total arrives in phase 5.
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { PriceTag } from '@/components/PriceTag';
 import { putBack, setQuantity } from '@/lib/cart';
 import { formatCents } from '@/lib/money';
+import { currentPrices, type CurrentPrice } from '@/lib/prices';
 import { supabase } from '@/lib/supabase';
 import { colors } from '@/lib/theme';
 import type { TripItem } from '@/lib/types';
 
 type TripWithStore = {
   id: string;
+  store_id: string;
   budget_cents: number | null;
   store_locations: { name: string } | null;
 };
@@ -22,11 +26,12 @@ export default function TripScreen() {
   const insets = useSafeAreaInsets();
   const [trip, setTrip] = useState<TripWithStore | null>(null);
   const [items, setItems] = useState<TripItem[]>([]);
+  const [prices, setPrices] = useState<Record<string, CurrentPrice> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [t, i] = await Promise.all([
-      supabase.from('trips').select('id, budget_cents, store_locations(name)').eq('id', id).single(),
+      supabase.from('trips').select('id, store_id, budget_cents, store_locations(name)').eq('id', id).single(),
       supabase
         .from('trip_items')
         .select('id, trip_id, barcode, quantity, unit_price_cents, added_at, products(name, brand, size_text, image_url)')
@@ -36,7 +41,15 @@ export default function TripScreen() {
     ]);
     setError(t.error?.message ?? i.error?.message ?? null);
     if (t.data) setTrip(t.data as unknown as TripWithStore);
-    setItems((i.data ?? []) as unknown as TripItem[]);
+    const loaded = (i.data ?? []) as unknown as TripItem[];
+    setItems(loaded);
+    if (t.data) {
+      try {
+        setPrices(await currentPrices(t.data.store_id, loaded.map((it) => it.barcode)));
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    }
   }, [id]);
 
   // Reload whenever we come back from the scanner.
@@ -96,7 +109,13 @@ export default function TripScreen() {
             <Text style={styles.muted}>Tap Scan, point at a barcode, and it lands here.</Text>
           </View>
         }
-        renderItem={({ item }) => <ItemRow item={item} onChange={(d) => changeQuantity(item, d)} />}
+        renderItem={({ item }) => (
+          <ItemRow
+            item={item}
+            price={prices === null ? undefined : (prices[item.barcode] ?? null)}
+            onChange={(d) => changeQuantity(item, d)}
+          />
+        )}
       />
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
@@ -111,7 +130,15 @@ export default function TripScreen() {
   );
 }
 
-function ItemRow({ item, onChange }: { item: TripItem; onChange: (delta: number) => void }) {
+function ItemRow({
+  item,
+  price,
+  onChange,
+}: {
+  item: TripItem;
+  price: CurrentPrice | null | undefined;
+  onChange: (delta: number) => void;
+}) {
   const p = item.products;
   const details = [p?.brand, p?.size_text].filter(Boolean).join(' · ');
   return (
@@ -125,7 +152,9 @@ function ItemRow({ item, onChange }: { item: TripItem; onChange: (delta: number)
             {details}
           </Text>
         )}
-        <Text style={styles.noPrice}>No price yet</Text>
+        <View style={{ marginTop: 4 }}>
+          <PriceTag price={price} />
+        </View>
       </View>
       <View style={styles.stepper}>
         <Pressable
@@ -173,7 +202,6 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   name: { fontSize: 16, fontWeight: '600', color: colors.text },
-  noPrice: { fontSize: 13, color: colors.muted, fontStyle: 'italic' },
   stepper: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   stepButton: {
     width: 40,

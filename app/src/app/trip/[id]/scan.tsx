@@ -21,6 +21,8 @@ import {
 
 import { track } from '@/lib/analytics';
 import { addToTrip, undoAdd, type AddResult } from '@/lib/cart';
+import { PriceTag } from '@/components/PriceTag';
+import { fetchPrice, type CurrentPrice } from '@/lib/prices';
 import { lookupProduct, type ManualTaxCategory } from '@/lib/products';
 import { supabase } from '@/lib/supabase';
 import { colors } from '@/lib/theme';
@@ -40,7 +42,8 @@ const TAX_CHOICES: { value: ManualTaxCategory; label: string }[] = [
 type Panel =
   | { kind: 'idle' }
   | { kind: 'busy' }
-  | { kind: 'added'; product: Product; added: AddResult }
+  // price: undefined while loading, null when none is known.
+  | { kind: 'added'; product: Product; added: AddResult; price: CurrentPrice | null | undefined }
   | { kind: 'needs_name'; barcode: string; offline: boolean }
   | { kind: 'error'; message: string }
   | { kind: 'type_barcode' };
@@ -85,8 +88,18 @@ export default function ScanScreen() {
   async function addProduct(product: Product, source: 'camera' | 'typed' | 'named') {
     const added = await addToTrip(tripId, product.barcode);
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setPanel({ kind: 'added', product, added });
+    setPanel({ kind: 'added', product, added, price: undefined });
     track('item_scanned', { storeId, props: { barcode: product.barcode, source, tax: product.tax_category } });
+
+    // Price arrives after the item is already in the cart, so a slow online
+    // source never holds up scanning.
+    let price: CurrentPrice | null = null;
+    try {
+      if (storeId) price = await fetchPrice(product.barcode, storeId);
+    } catch {
+      // Treated as "no price yet"; the cart re-reads prices anyway.
+    }
+    setPanel((p) => (p.kind === 'added' && p.added.itemId === added.itemId ? { ...p, price } : p));
   }
 
   function onBarcodeScanned({ data, type }: BarcodeScanningResult) {
@@ -276,6 +289,7 @@ function BottomPanel(props: {
             {product.name}
           </Text>
           {details !== '' && <Text style={styles.muted}>{details}</Text>}
+          <PriceTag price={panel.price} large />
           <View style={styles.row}>
             <Pressable
               disabled={undoing}

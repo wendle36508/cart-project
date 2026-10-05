@@ -110,5 +110,49 @@ check('user cannot read lookup misses',
 check('user cannot write lookup misses',
   (await asUser(alice, `insert into public.product_lookup_misses (barcode) values ('0000000000024')`)) !== null);
 
+// Phase 3: price resolution. In-store beats online; within a tier an active
+// sale beats the regular price; ended sales are ignored.
+async function bestAs(uid, barcodes) {
+  await db.exec(`begin; set local role authenticated; select set_config('request.jwt.claim.sub', '${uid}', true);`);
+  const list = barcodes.map((b) => `'${b}'`).join(',');
+  const rows = (await db.query(
+    `select barcode, tier, price_cents, is_sale, regular_price_cents
+       from public.current_prices('${store}', array[${list}]::text[]) order by barcode`)).rows;
+  await db.exec('rollback');
+  return rows;
+}
+const P = { a: '0000000000031', b: '0000000000048', c: '0000000000055', d: '0000000000062' };
+await db.exec(`
+  insert into public.products (barcode, name) values
+    ('${P.a}', 'A'), ('${P.b}', 'B'), ('${P.c}', 'C'), ('${P.d}', 'D');
+  insert into public.prices (barcode, store_id, tier, source, is_sale, price_cents, sale_end_date) values
+    -- A: online regular + online sale + in-store regular -> in-store regular
+    ('${P.a}', '${store}', 'online',   'online',       false, 300, null),
+    ('${P.a}', '${store}', 'online',   'online',       true,  250, null),
+    ('${P.a}', '${store}', 'in_store', 'in_store_tag', false, 329, null),
+    -- B: online regular + online sale -> online sale, with regular shown
+    ('${P.b}', '${store}', 'online',   'online',       false, 500, null),
+    ('${P.b}', '${store}', 'online',   'online',       true,  399, null),
+    -- C: in-store regular + in-store sale that ended yesterday -> regular
+    ('${P.c}', '${store}', 'in_store', 'in_store_tag', false, 199, null),
+    ('${P.c}', '${store}', 'in_store', 'in_store_tag', true,  149, public.store_today() - 1),
+    -- D: in-store sale ending today still counts
+    ('${P.d}', '${store}', 'in_store', 'in_store_tag', false, 899, null),
+    ('${P.d}', '${store}', 'in_store', 'in_store_tag', true,  699, public.store_today());
+`);
+const eq = (label, actual, expected) => {
+  const ok = JSON.stringify(actual) === JSON.stringify(expected);
+  check(ok ? label : `${label}  (got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)})`, ok);
+};
+const best = Object.fromEntries((await bestAs(alice, Object.values(P).concat('0000000000079'))).map((r) => [r.barcode, r]));
+eq('in-store price beats online (even an online sale)', [best[P.a].tier, best[P.a].price_cents], ['in_store', 329]);
+eq('online sale beats online regular, regular shown alongside',
+  [best[P.b].tier, best[P.b].is_sale, best[P.b].price_cents, best[P.b].regular_price_cents], ['online', true, 399, 500]);
+eq('ended sale is ignored', [best[P.c].is_sale, best[P.c].price_cents], [false, 199]);
+eq('sale ending today still applies', [best[P.d].is_sale, best[P.d].price_cents, best[P.d].regular_price_cents], [true, 699, 899]);
+eq('barcode with no price is absent', best['0000000000079'], undefined);
+check('online price checks hidden from users',
+  (await countAs(alice, 'select count(*)::int n from public.online_price_checks')) === 0);
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);
