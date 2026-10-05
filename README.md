@@ -27,7 +27,9 @@ docs/                data sources, tax rules
 
 ## Setup
 
-Prerequisites: Node 20+, and the Expo Go app on your phone.
+**Live web app:** https://wendle36508.github.io/cart-project/ (open on a phone, then Share → Add to Home Screen). Every push to `main` that touches `app/` redeploys it via `.github/workflows/deploy-web.yml`.
+
+Prerequisites for local development: Node 20.19+, and optionally the Expo Go app on your phone.
 
 ```bash
 npm install                 # root: Supabase CLI + test tooling
