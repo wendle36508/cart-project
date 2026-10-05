@@ -1,0 +1,13 @@
+{
+  "name": "cart-project",
+  "private": true,
+  "description": "CartCheck: scan groceries as you shop and see your running total before checkout.",
+  "scripts": {
+    "test:db": "node scripts/test-migrations.mjs",
+    "supabase": "supabase"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "supabase": "^2.119.0"
+  }
+}
