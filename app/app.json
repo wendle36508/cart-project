@@ -20,8 +20,12 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "output": "single",
+      "favicon": "./assets/images/favicon.png",
+      "name": "CartCheck",
+      "shortName": "CartCheck",
+      "themeColor": "#1F6FEB",
+      "backgroundColor": "#F7F8FA"
     },
     "plugins": [
       "expo-router",
@@ -45,7 +49,8 @@
     ],
     "experiments": {
       "typedRoutes": true,
-      "reactCompiler": true
+      "reactCompiler": true,
+      "baseUrl": "/cart-project"
     }
   }
 }
